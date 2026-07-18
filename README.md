@@ -3,7 +3,9 @@
 [![Dataset](https://img.shields.io/badge/Dataset-Football_Description-red)](Data/)
 [![LICENSE](https://img.shields.io/badge/LICENSE-MIT-blue)](LICENSE)
 
-This project is the official implementation of the paper _"Hierarchical Chat-Based Strategies with MLLMs For Spatio-Temporal Action Detection"_.
+HCBS addresses the difficulty of recognizing subtle, fast-paced, and multi-participant football actions whose visual details are often missed by standard multimodal large language model prompts. It belongs to the **spatio-temporal action detection (STAD)** task, with experiments conducted on the football subsets of MultiSports, J-HMDB, and UCF101-24. Its core mechanism is a **Hierarchical Chat-Based Strategy** that guides MLLMs through a progressive chain-of-thought process—from entity localization to trajectory reasoning and micro-action parsing—to generate increasingly detailed frame-level descriptions that enhance visual representations. To run the code, clone [MOC-Detector](https://github.com/MCG-NJU/MOC-Detector), copy this repository's `Project/src/` directory into `MOC-Detector/src/`, install and configure the dependencies and datasets required by MOC-Detector, and then launch training or evaluation using the corresponding MOC-Detector commands.
+
+This project is the official implementation of the paper _"Hierarchical Chat-Based Strategies with MLLMs for Spatio-Temporal Action Detection"_.
 [[Paper](https://doi.org/10.1016/j.ipm.2025.104094)][[Free access before April 08, 2025](https://authors.elsevier.com/c/1kdLU15hYd-jQk)]
 
 ## 🏈 Key Features
@@ -92,7 +94,7 @@ Please follow the instruction of https://github.com/MCG-NJU/MOC-Detector.
 | LLaVA-NeXT  | 99.99           | 99.58           | 73.38            | 100.00          | 100.00          | 86.79            |
 | LLaVA       | 99.56           | 98.02           | 61.69            | 100.00          | 100.00          | 79.79            |
 | VideoLLaMA2 | 99.58           | 98.98           | 60.42            | 100.00          | 100.00          | 75.49            |
-| LongVA      | 99.72           | 97.66           | 64.52            | 100.00          | 100.00          | 67.01            |
+| LongVA      | 99.72           | 97.66            | 64.52            | 100.00          | 100.00          | 67.01            |
 
 ## 📜 Citation
 If you use this work, please cite:
