@@ -3,10 +3,22 @@
 [![Dataset](https://img.shields.io/badge/Dataset-Football_Description-red)](Data/)
 [![LICENSE](https://img.shields.io/badge/LICENSE-MIT-blue)](LICENSE)
 
-HCBS addresses the difficulty of recognizing subtle, fast-paced, and multi-participant football actions whose visual details are often missed by standard multimodal large language model prompts. It belongs to the **spatio-temporal action detection (STAD)** task, with experiments conducted on the football subsets of MultiSports, J-HMDB, and UCF101-24. Its core mechanism is a **Hierarchical Chat-Based Strategy** that guides MLLMs through a progressive chain-of-thought process—from entity localization to trajectory reasoning and micro-action parsing—to generate increasingly detailed frame-level descriptions that enhance visual representations. To run the code, clone [MOC-Detector](https://github.com/MCG-NJU/MOC-Detector), copy this repository's `Project/src/` directory into `MOC-Detector/src/`, install and configure the dependencies and datasets required by MOC-Detector, and then launch training or evaluation using the corresponding MOC-Detector commands.
-
 This project is the official implementation of the paper _"Hierarchical Chat-Based Strategies with MLLMs for Spatio-Temporal Action Detection"_.
-[[Paper](https://doi.org/10.1016/j.ipm.2025.104094)][[Free access before April 08, 2025](https://authors.elsevier.com/c/1kdLU15hYd-jQk)]
+[[Paper](https://doi.org/10.1016/j.ipm.2025.104094)]
+
+## Overview
+
+**Problem.** Standard multimodal large language models (MLLMs) often fail to generate sufficiently detailed descriptions for subtle, fast-paced, and multi-participant actions in football videos, limiting the performance of spatio-temporal action detection (STAD).
+
+**Task.** MLLM-assisted Spatio-Temporal Action Detection (STAD) for football videos.
+
+**Core Mechanism.** Hierarchical Chat-Based Strategies (HCBS), a hierarchical multi-round prompting framework that progressively guides MLLMs through chain-of-thought reasoning to generate increasingly fine-grained action descriptions for visual feature enhancement.
+
+**How to Run.**
+1. Clone the official MOC-Detector repository.
+2. Replace the original `src/` directory with `Project/src/` from this repository.
+3. Prepare the datasets following the MOC-Detector instructions.
+4. Run the original MOC-Detector training or evaluation pipeline.
 
 ## 🏈 Key Features
 - **Hierarchical Chat-Based Strategy (HCBS)**
