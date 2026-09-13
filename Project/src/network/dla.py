@@ -51,7 +51,6 @@ class BasicBlock(nn.Module):
 
         out += residual
         out = self.relu(out)
-
         return out
 
 
@@ -72,7 +71,6 @@ class Root(nn.Module):
         if self.residual:
             x += children[0]
         x = self.relu(x)
-
         return x
 
 
@@ -166,12 +164,9 @@ class DLA(nn.Module):
                           kernel_size=1, stride=1, bias=False),
                 nn.BatchNorm2d(planes, momentum=BN_MOMENTUM),
             )
-
-        layers = []
-        layers.append(block(inplanes, planes, stride, downsample=downsample))
-        for i in range(1, blocks):
+        layers = [block(inplanes, planes, stride, downsample=downsample)]
+        for _ in range(1, blocks):
             layers.append(block(inplanes, planes))
-
         return nn.Sequential(*layers)
 
     def _make_conv_level(self, inplanes, planes, convs, stride=1, dilation=1):
@@ -202,11 +197,9 @@ class DLA(nn.Module):
             self.channels[-1], num_classes,
             kernel_size=1, stride=1, padding=0, bias=True)
         self.load_state_dict(model_weights)
-        # self.fc = fc
 
 
 class Identity(nn.Module):
-
     def __init__(self):
         super(Identity, self).__init__()
 
@@ -242,7 +235,6 @@ class DeformConv(nn.Module):
 
 
 class IDAUp(nn.Module):
-
     def __init__(self, o, channels, up_f):
         super(IDAUp, self).__init__()
         for i in range(1, len(channels)):
@@ -250,12 +242,10 @@ class IDAUp(nn.Module):
             f = int(up_f[i])
             proj = DeformConv(c, o)
             node = DeformConv(o, o)
-
             up = nn.ConvTranspose2d(o, o, f * 2, stride=f,
                                     padding=f // 2, output_padding=0,
                                     groups=o, bias=False)
             fill_up_weights(up)
-
             setattr(self, 'proj_' + str(i), proj)
             setattr(self, 'up_' + str(i), up)
             setattr(self, 'node_' + str(i), node)
@@ -287,7 +277,7 @@ class DLAUp(nn.Module):
             in_channels[j + 1:] = [channels[j] for _ in channels[j + 1:]]
 
     def forward(self, layers):
-        out = [layers[-1]]  # start with 32
+        out = [layers[-1]]
         for i in range(len(layers) - self.startp - 1):
             ida = getattr(self, 'ida_{}'.format(i))
             ida(layers, len(layers) - i - 2, len(layers))
@@ -307,44 +297,20 @@ class MOC_DLA(nn.Module):
         channels = self.base.channels
         scales = [2 ** i for i in range(len(channels[self.first_level:]))]
         self.dla_up = DLAUp(self.first_level, channels[self.first_level:], scales)
-
         out_channel = channels[self.first_level]
-
         self.ida_up = IDAUp(out_channel, channels[self.first_level:self.last_level],
                             [2 ** i for i in range(self.last_level - self.first_level)])
 
-    def forward(self, input, textdata):
-        # input: torch.Size([3, 288, 288])
+    def _extract_features(self, input):
         x = self.base(input)
-        x_text = self.base(textdata)
-
-        # torch.Size([8, 16, 288, 288])
         x = self.dla_up(x)
-        x_text = self.dla_up(x_text)
-
-        # torch.Size([8, 64, 72, 72])
-        y = []
-        text_y = []
-        for j in range(self.last_level - self.first_level):
-            y.append(x[j].clone())
-        for j in range(self.last_level - self.first_level):
-            text_y.append(x_text[j].clone())
-
-        # torch.Size([8, 64, 72, 72])
+        y = [x[j].clone() for j in range(self.last_level - self.first_level)]
         self.ida_up(y, 0, len(y))
-        self.ida_up(text_y, 0, len(text_y))
+        return y[-1]
 
-        # torch.Size([8, 64, 72, 72])
-
-        return y[-1], text_y[-1]
-
-
-    # def forward(self, input):
-    #     x = self.base(input)
-    #     x = self.dla_up(x)
-    #     y = []
-    #     for j in range(self.last_level - self.first_level):
-    #         y.append(x[j].clone())
-    #     self.ida_up(y, 0, len(y))
-    #
-    #     return y[-1]
+    def forward(self, input, textdata=None):
+        image_feature = self._extract_features(input)
+        if textdata is None:
+            return image_feature
+        text_feature = self._extract_features(textdata)
+        return image_feature, text_feature
