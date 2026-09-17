@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import pickle
 import sys
+import tempfile
 
 from tiny_opt import opts
 from vis_dataset import VisualizationDataset
@@ -106,7 +107,7 @@ class PrefetchDataset(torch.utils.data.Dataset):
                     flows = self.flow_buffer
         outfile = self.outfile(frame)
         if not os.path.isdir(os.path.dirname(outfile)):
-            os.system("mkdir -p '" + os.path.dirname(outfile) + "'")
+            os.makedirs(os.path.dirname(outfile), exist_ok=True)
 
         return {'outfile': outfile, 'images': images, 'flows': flows, 'meta': {'height': self.h, 'width': self.w, 'output_height': self.output_h, 'output_width': self.output_w}, 'video_tag': video_tag}
 
@@ -118,7 +119,7 @@ class PrefetchDataset(torch.utils.data.Dataset):
 
 
 def stream_inference(opt):
-    os.environ['CUDA_VISIBLE_DEVICES'] = "0"
+    os.environ['CUDA_VISIBLE_DEVICES'] = opt.gpus_str
     # torch.backends.cudnn.benchmark = True
 
     dataset = VisualizationDataset(opt)
@@ -146,12 +147,11 @@ def stream_inference(opt):
 
 def det():
     opt = opts().parse()
-    if opt.flow_model != "":
-        assert 'online flow is not supported yet!'
-    os.system("rm -rf " + opt.inference_dir + "/*")
-    os.system("rm -rf tmp")
-    os.system("mkdir -p '" + os.path.join(opt.inference_dir, 'rgb') + "'")
-    os.system("mkdir -p '" + os.path.join(opt.inference_dir, 'flow') + "'")
+    os.makedirs(opt.inference_dir, exist_ok=True)
+    opt.inference_dir = tempfile.mkdtemp(prefix='visualization-', dir=opt.inference_dir)
+    os.makedirs(os.path.join(opt.inference_dir, 'rgb'))
+    os.makedirs(os.path.join(opt.inference_dir, 'flow'))
+    print('Visualization output:', opt.inference_dir)
 
     video2frames(opt)
 

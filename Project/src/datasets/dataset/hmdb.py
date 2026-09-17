@@ -11,7 +11,7 @@ class JHMDB(BaseDataset):
     num_classes = 1
 
     def __init__(self, opt, mode):
-        self.ROOT_DATASET_PATH = os.path.join(opt.root_dir, 'data/JHMDB')
+        self.ROOT_DATASET_PATH = os.path.join(opt.data_root, 'JHMDB')
         pkl_filename = 'JHMDB-GT.pkl'
         super(JHMDB, self).__init__(opt, mode, self.ROOT_DATASET_PATH, pkl_filename)
 

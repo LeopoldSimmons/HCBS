@@ -13,14 +13,7 @@ from ACT_utils.ACT_aug import apply_distort, apply_expand, crop_image
 import numpy as np
 
 
-def get_file_tensor(path):
-    numpy_list = np.load(path, allow_pickle=True)
-    # 创建一个形状为（3, 1, 1）的数组，其中元素都为1
-    ones_array = np.ones((3, 1, 1))
-    # 使用广播将两个数组相乘
-    numpy_list = numpy_list * ones_array
-    numpy_list = numpy_list.astype(np.float32)
-    return numpy_list
+from datasets.io_utils import read_image, load_text
 
 
 class Sampler(data.Dataset):
@@ -38,17 +31,14 @@ class Sampler(data.Dataset):
 
         # read images
         if self._ninput > 1:
-            images = [cv2.imread(self.flowfile(v, min(frame + i, self._nframes[v]))).astype(np.float32) for i in
+            images = [read_image(self.flowfile(v, min(frame + i, self._nframes[v]))) for i in
                       range(K + self._ninput - 1)]
         else:
 
-            imagefile = [self.imagefile(v, frame + i) for i in range(K)]
-            for file in imagefile:
-                pkl_file.append(file.replace('rgb-images', 'numpys').replace('.jpg', '.npy'))
-            for file in pkl_file:
-                txt_tensor.append(get_file_tensor(file))
-
-            images = [cv2.imread(self.imagefile(v, frame + i)).astype(np.float32) for i in range(K)]
+            if self.opt.modality == 'multimodal':
+                txt_tensor = [load_text(self.textfile(v, frame + i), self.opt.text_format,
+                                        input_h, input_w) for i in range(K)]
+            images = [read_image(self.imagefile(v, frame + i)) for i in range(K)]
 
         data = [np.empty((3 * self._ninput, self._resize_height, self._resize_width), dtype=np.float32) for i in
                 range(K)]
@@ -132,6 +122,8 @@ class Sampler(data.Dataset):
         num_objs = 0
         for ilabel in gt_bbox:
             for itube in range(len(gt_bbox[ilabel])):
+                if num_objs >= self.max_objs:
+                    raise ValueError('{} frame {} exceeds max_objs={}; increase --max_objs'.format(v, frame, self.max_objs))
                 key = K // 2
                 # key frame's bbox height and width （both on the feature map）
                 key_h, key_w = gt_bbox[ilabel][itube][key, 3] - gt_bbox[ilabel][itube][key, 1], gt_bbox[ilabel][itube][
@@ -145,8 +137,8 @@ class Sampler(data.Dataset):
                                    (gt_bbox[ilabel][itube][key, 1] + gt_bbox[ilabel][itube][key, 3]) / 2],
                                   dtype=np.float32)
                 center_int = center.astype(np.int32)
-                assert 0 <= center_int[0] and center_int[0] <= output_w and 0 <= center_int[1] and center_int[
-                    1] <= output_h
+                assert 0 <= center_int[0] and center_int[0] < output_w and 0 <= center_int[1] and center_int[
+                    1] < output_h
 
                 # draw ground truth gaussian heatmap at each center location
                 draw_umich_gaussian(hm[ilabel], center_int, radius)
@@ -176,7 +168,9 @@ class Sampler(data.Dataset):
                 mask[num_objs] = 1
                 num_objs = num_objs + 1
 
-        result = {'input': data, 'textdata': txt_tensor, 'hm': hm, 'mov': mov, 'wh': wh, 'mask': mask, 'index': index, 'index_all': index_all}
+        result = {'input': data, 'hm': hm, 'mov': mov, 'wh': wh, 'mask': mask, 'index': index, 'index_all': index_all}
         # result = {'input': data, 'hm': hm, 'mov': mov, 'wh': wh, 'mask': mask, 'index': index, 'index_all': index_all}
 
+        if self.opt.modality == 'multimodal':
+            result['textdata'] = txt_tensor
         return result

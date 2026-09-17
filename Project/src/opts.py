@@ -10,6 +10,21 @@ class opts(object):
     def __init__(self):
         self.parser = argparse.ArgumentParser()
 
+        self.parser.add_argument('--modality', choices=['multimodal', 'visual_only'], default='multimodal')
+        self.parser.add_argument('--text_format', choices=['feature_map', 'legacy_image'], default='feature_map')
+        self.parser.add_argument('--text_root', default='', help='Root containing video/frame.npy files')
+        self.parser.add_argument('--text_revision', default='', help='Immutable feature revision for legacy exports without a manifest')
+        self.parser.add_argument('--data_root', default=os.environ.get('HCBS_DATA_ROOT', ''))
+        self.parser.add_argument('--split_manifest', default='')
+        self.parser.add_argument('--eval_split', choices=['val', 'test'], default='test')
+        self.parser.add_argument('--num_classes', type=int, default=None)
+        self.parser.add_argument('--save_dir', default='')
+        self.parser.add_argument('--resume', action='store_true', help='Restore full trusted training checkpoint')
+        self.parser.add_argument('--allow_legacy_checkpoint', action='store_true', help='Allow missing experiment metadata, not missing weights')
+        self.parser.add_argument('--deterministic', action='store_true')
+        self.parser.add_argument('--max_objs', type=int, default=128)
+        self.parser.add_argument('--dcn_backend', choices=['torchvision', 'legacy'], default='torchvision')
+
         # basical experiment settings
         self.parser.add_argument('--task', default='MOC_train',
                                  help='current task')
@@ -74,7 +89,7 @@ class opts(object):
                                  help='use ucf pretrain for jhmdb')
 
         self.parser.add_argument('--auto_stop', action='store_true',
-                                 help='auto_stop when training, used for jhmdb')
+                                 help='select best checkpoint on explicit validation AP (no test selection or optimizer rollback)')
         self.parser.add_argument('--save_all', action='store_true',
                                  help='save each epoch training model')
         self.parser.add_argument('--val_epoch', action='store_true',
@@ -96,6 +111,7 @@ class opts(object):
                                  help='loss weight for bbox regression.')
 
         # inference settings
+        self.parser.add_argument('--allow_legacy_predictions', action='store_true')
         self.parser.add_argument('--redo', action='store_true',
                                  help='redo for count APs')
         self.parser.add_argument('--flip_test', action='store_true',
@@ -152,14 +168,31 @@ class opts(object):
                 slave_chunk_size += 1
             opt.chunk_sizes.append(slave_chunk_size)
 
+        if opt.modality == 'multimodal' and ('dla' not in opt.arch or opt.ninput > 1):
+            self.parser.error('Multimodal training/inference requires DLA RGB; use --modality visual_only for flow or ResNet')
+        if opt.resume and (not opt.load_model or opt.ucf_pretrain):
+            self.parser.error('--resume requires --load_model and cannot be combined with --ucf_pretrain')
+        if (opt.val_epoch or opt.auto_stop) and not opt.split_manifest:
+            self.parser.error('Validation/model selection requires --split_manifest with disjoint train/val/test')
+        if opt.K < 1 or opt.batch_size < 1 or opt.max_objs < 1 or opt.visual_per_inter < 1:
+            self.parser.error('K, batch_size, max_objs and visual_per_inter must be positive')
+        if opt.down_ratio != 4 or min(opt.resize_height, opt.resize_width) < 32 or opt.resize_height % 32 or opt.resize_width % 32:
+            self.parser.error('Use down_ratio=4 and image dimensions divisible by 32')
+        if opt.task in ('stream', 'speed_test') and opt.modality != 'visual_only':
+            self.parser.error('Streaming and speed_test are visual_only; use --task normal for multimodal inference')
+        if opt.batch_size < len(opt.gpus) or any(size < 1 for size in opt.chunk_sizes):
+            self.parser.error('Batch size/chunk sizes must allocate at least one example per GPU')
+        os.environ['CUDA_VISIBLE_DEVICES'] = opt.gpus_str
+        os.environ['HCBS_DCN_BACKEND'] = opt.dcn_backend
         opt.root_dir = os.path.join(os.path.dirname(__file__), '..')
-        opt.save_dir = opt.rgb_model if opt.rgb_model != '' else opt.flow_model
-        opt.log_dir = opt.save_dir + '/logs_tensorboardX'
+        opt.data_root = opt.data_root or os.path.join(opt.root_dir, 'data')
+        opt.save_dir = opt.save_dir or os.path.join(opt.root_dir, 'experiments', opt.exp_id)
+        opt.log_dir = os.path.join(opt.save_dir, 'logs_tensorboardX')
 
         return opt
 
     def update_dataset(self, opt, dataset):
-        opt.num_classes = dataset.num_classes
+        opt.num_classes = dataset.num_classes if opt.num_classes is None else opt.num_classes
         opt.branch_info = {'hm': opt.num_classes,
                            'mov': 2 * opt.K,
                            'wh': 2 * opt.K}

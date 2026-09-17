@@ -12,6 +12,7 @@ from MOC_utils.model import convert2flow, create_model, load_model
 from MOC_utils.data_parallel import DataParallel
 from .decode import moc_decode
 from MOC_utils.utils import flip_tensor
+from MOC_utils.checkpoint import read_checkpoint, check_metadata
 
 
 
@@ -26,6 +27,7 @@ class MOCDetector(object):
         if opt.rgb_model != '':
             print('create rgb model')
             self.rgb_model = create_model(opt.arch, opt.branch_info, opt.head_conv, opt.K, flip_test=opt.flip_test)
+            check_metadata(read_checkpoint(opt.rgb_model), opt, input_kind='rgb')
             self.rgb_model = load_model(self.rgb_model, opt.rgb_model)
             self.rgb_model = DataParallel(
                 self.rgb_model, device_ids=opt.gpus,
@@ -35,6 +37,7 @@ class MOCDetector(object):
             print('create flow model')
             self.flow_model = create_model(opt.arch, opt.branch_info, opt.head_conv, opt.K, flip_test=opt.flip_test)
             self.flow_model = convert2flow(opt.ninput, self.flow_model)
+            check_metadata(read_checkpoint(opt.flow_model), opt, input_kind='flow')
             self.flow_model = load_model(self.flow_model, opt.flow_model)
 
             self.flow_model = DataParallel(
@@ -46,7 +49,7 @@ class MOCDetector(object):
 
     def pre_process(self, images, is_flow=False, ninput=1):
         K = self.opt.K
-        images = [cv2.resize(im, (self.opt.resize_height, self.opt.resize_width), interpolation=cv2.INTER_LINEAR) for im in images]
+        images = [cv2.resize(im, (self.opt.resize_width, self.opt.resize_height), interpolation=cv2.INTER_LINEAR) for im in images]
 
         if self.opt.flip_test:
             data = [np.empty((3 * ninput, self.opt.resize_height, self.opt.resize_width), dtype=np.float32) for i in range(K * 2)]
@@ -150,23 +153,23 @@ class MOCDetector(object):
             # print(len(data['images']))
             # print(len(data['textdata']))
             images = data['images']
-            text = data['textdata']
+            text = data.get('textdata') if self.opt.modality == 'multimodal' else None
             for i in range(len(images)):
                 images[i] = images[i].to(self.opt.device)
-                text[i] = text[i].to(self.opt.device)
+            if text is not None:
+                text = [item.to(self.opt.device) for item in text]
 
         if self.flow_model is not None:
             flows = data['flows']
             for i in range(len(flows)):
                 flows[i] = flows[i].to(self.opt.device)
 
-        meta = data['meta']
-        meta = {k: v.numpy()[0] for k, v in meta.items()}
-
+        meta = {key: value.cpu().numpy() for key, value in data['meta'].items()}
         detections = self.process(images, text, flows)
-        # detections = self.process(images, flows)
-        detections = self.post_process(detections, meta['height'], meta['width'],
-                                       meta['output_height'], meta['output_width'],
-                                       self.opt.num_classes, self.opt.K)
-
-        return detections
+        results = []
+        for index in range(detections.shape[0]):
+            results.extend(self.post_process(
+                detections[index:index + 1], meta['height'][index], meta['width'][index],
+                meta['output_height'][index], meta['output_width'][index],
+                self.opt.num_classes, self.opt.K))
+        return results

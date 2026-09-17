@@ -25,7 +25,6 @@ def set_seed(seed):
 
 
 if __name__ == '__main__':
-    shutil.rmtree('tmp', ignore_errors=True)
     opt = opts().parse()
     t1 = time.time()
     set_seed(opt.seed)

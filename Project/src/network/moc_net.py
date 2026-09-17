@@ -31,6 +31,9 @@ class MOC_Net(nn.Module):
         return image_feature, text_feature
 
     def forward(self, input, textdata=None):
+        expected_length = self.K * (2 if self.flip_test else 1)
+        if len(input) != expected_length:
+            raise ValueError('Expected {} input frames, got {}'.format(expected_length, len(input)))
         if textdata is not None and len(textdata) != len(input):
             raise ValueError('input and textdata must have the same temporal length')
 

@@ -1,0 +1,12 @@
+# Candidate Python 3.10/3.11 environment, NOT runtime-validated by this change.
+# Install torch and torchvision wheels for the same CUDA runtime.
+torch==2.5.1
+torchvision==0.20.1
+numpy==1.26.4
+opencv-python==4.10.0.84
+transformers==4.46.3
+tensorboardX==2.6.2.2
+progress==1.6
+tqdm==4.67.1
+matplotlib==3.9.2
+imageio==2.36.1

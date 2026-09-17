@@ -32,7 +32,7 @@ class PrefetchDataset(torch.utils.data.Dataset):
         self.pre_process = pre_process
         self.pre_process_single_frame = pre_process_single_frame
         self.opt = opt
-        self.vlist = dataset._test_videos[dataset.split - 1]
+        self.vlist = dataset.video_list
         self.gttubes = dataset._gttubes
         self.nframes = dataset._nframes
         self.imagefile = dataset.imagefile
@@ -98,16 +98,16 @@ class PrefetchDataset(torch.utils.data.Dataset):
 
 
 def speed_test_stream_inference(opt):
-    os.environ['CUDA_VISIBLE_DEVICES'] = "0"
+    os.environ['CUDA_VISIBLE_DEVICES'] = opt.gpus_str
     torch.backends.cudnn.benchmark = True
     if opt.flow_model != '':
         print('Online speed test does not support flow model.')
-        sys.exit()
+        raise ValueError('Speed benchmark requires RGB visual_only')
 
     Dataset = switch_dataset[opt.dataset]
     opt = opts().update_dataset(opt, Dataset)
 
-    dataset = Dataset(opt, 'test')
+    dataset = Dataset(opt, opt.eval_split)
     detector = MOCDetector(opt)
     prefetch_dataset = PrefetchDataset(opt, dataset, detector.pre_process, detector.pre_process_single_frame)
     data_loader = torch.utils.data.DataLoader(
@@ -123,11 +123,15 @@ def speed_test_stream_inference(opt):
 
         if iter == 200:
             tag1 = iter
-            time1 = time.time()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            time1 = time.perf_counter()
 
         if iter == 1200:
             tag2 = iter
-            time2 = time.time()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            time2 = time.perf_counter()
 
             time_cost = time2 - time1
             total_frame = tag2 - tag1
@@ -136,7 +140,7 @@ def speed_test_stream_inference(opt):
             fps = total_frame / time_cost
 
             print('speed is: ', speed)
-            print('fps is: ', fps)
-            assert 0
+            print('Synthetic visual-only detector FPS (excludes video I/O, MLLM and text encoding): ', fps)
+            return {'seconds_per_frame': speed, 'fps': fps}
 
         detections = detector.run(data)

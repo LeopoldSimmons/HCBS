@@ -3,12 +3,17 @@ from __future__ import division
 from __future__ import print_function
 
 import argparse
+import os
 
 
 class opts(object):
     def __init__(self):
         self.parser = argparse.ArgumentParser()
 
+        self.parser.add_argument('--allow_legacy_checkpoint', action='store_true')
+        self.parser.add_argument('--dcn_backend', choices=['torchvision', 'legacy'], default='torchvision')
+        self.parser.add_argument('--gpus', default='0')
+        self.parser.add_argument('--labels_file', required=True, help='JSON list in checkpoint class order')
         # basical experiment settings
         self.parser.add_argument('--DATA_ROOT', default='../../data/ucf_test_videos',
                                  help='dataset root path')
@@ -82,8 +87,17 @@ class opts(object):
             opt.pre_extracted_brox_flow = True
         opt.mean = [0.40789654, 0.44719302, 0.47026115]
         opt.std = [0.28863828, 0.27408164, 0.27809835]
-        opt.gpus = [0]
-        opt.vname = opt.vname.split('_')[1] + '/' + opt.vname
+        opt.gpus_str = opt.gpus
+        selected = [int(value) for value in opt.gpus.split(',')]
+        opt.gpus = list(range(len(selected))) if selected[0] >= 0 else [-1]
+        os.environ['CUDA_VISIBLE_DEVICES'] = opt.gpus_str
+        os.environ['HCBS_DCN_BACKEND'] = opt.dcn_backend
+        opt.modality = 'visual_only'
+        opt.visualization = True
+        if not opt.flow_model:
+            opt.ninput = 1
+        if os.path.isabs(opt.vname) or '..' in opt.vname.replace('\\', '/').split('/'):
+            self.parser.error('vname must be a relative video path without parent traversal')
         opt.branch_info = {'hm': opt.num_classes,
                            'mov': 2 * opt.K,
                            'wh': 2 * opt.K}

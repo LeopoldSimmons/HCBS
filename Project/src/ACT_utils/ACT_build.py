@@ -4,6 +4,7 @@ from __future__ import print_function
 import sys
 import os
 import pickle
+from MOC_utils.cache import require_cache_protocol, atomic_pickle
 
 import numpy as np
 
@@ -28,7 +29,7 @@ def load_frame_detections(opt, dataset, K, vlist, inference_dir):
             pkl = os.path.join(inference_dir, v, "{:0>5}.pkl".format(i))
             if not os.path.isfile(pkl):
                 print("ERROR: Missing extracted tubelets " + pkl)
-                sys.exit()
+                raise FileNotFoundError('Missing predictions; complete inference before evaluation')
 
             with open(pkl, 'rb') as fid:
                 dets = pickle.load(fid)
@@ -58,7 +59,7 @@ def load_frame_detections(opt, dataset, K, vlist, inference_dir):
         Bar.suffix = '[{0}/{1}]:{2}|Tot: {total:} |ETA: {eta:} '.format(iv + 1, len(vlist), v, total=bar.elapsed_td, eta=bar.eta_td)
         bar.next()
     bar.finish()
-    return np.concatenate(alldets, axis=0)
+    return np.concatenate(alldets, axis=0) if alldets else np.empty((0, 8), dtype=np.float32)
 
 
 def BuildTubes(opt):
@@ -69,11 +70,12 @@ def BuildTubes(opt):
     Dataset = get_dataset(opt.dataset)
     inference_dirname = opt.inference_dir
     K = opt.K
-    split = 'val'
+    split = opt.eval_split
     dataset = Dataset(opt, split)
+    require_cache_protocol(opt, dataset)
 
     print('inference_dirname is ', inference_dirname)
-    vlist = dataset._test_videos[opt.split - 1]
+    vlist = dataset.video_list
     bar = Bar('{}'.format('BuildTubes'), max=len(vlist))
     for iv, v in enumerate(vlist):
         outfile = os.path.join(inference_dirname, v + "_tubes.pkl")
@@ -89,7 +91,7 @@ def BuildTubes(opt):
             resname = os.path.join(inference_dirname, v, "{:0>5}.pkl".format(startframe))
             if not os.path.isfile(resname):
                 print("ERROR: Missing extracted tubelets " + resname)
-                sys.exit()
+                raise FileNotFoundError('Missing predictions; complete inference before evaluation')
 
             with open(resname, 'rb') as fid:
                 VDets[startframe] = pickle.load(fid)
@@ -186,8 +188,7 @@ def BuildTubes(opt):
 
             RES[ilabel] = output
         # RES{ilabel:[(out[length,6],score)]}ilabel[0,...]
-        with open(outfile, 'wb') as fid:
-            pickle.dump(RES, fid)
+        atomic_pickle(outfile, RES)
         Bar.suffix = '[{0}/{1}]:{2}|Tot: {total:} |ETA: {eta:} '.format(
             iv + 1, len(vlist), v, total=bar.elapsed_td, eta=bar.eta_td)
         bar.next()

@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+Project/experiments/
+Project/data/
+Project/trained_model/
+tmp/

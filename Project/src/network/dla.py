@@ -312,5 +312,17 @@ class MOC_DLA(nn.Module):
         image_feature = self._extract_features(input)
         if textdata is None:
             return image_feature
-        text_feature = self._extract_features(textdata)
+        if textdata.ndim != 4:
+            raise ValueError('Text input must be BCHW')
+        if textdata.shape[1] == self.output_channel:
+            # The exporter already produces detector-space features. Do not run
+            # them through the 3-channel image stem or update its BatchNorm.
+            text_feature = textdata
+        elif textdata.shape[1] == 3:
+            # Explicit legacy_image mode preserves historical shared-backbone behavior.
+            text_feature = self._extract_features(textdata)
+        else:
+            raise ValueError('Text input requires 64 feature channels or 3 legacy image channels')
+        if text_feature.shape != image_feature.shape:
+            raise ValueError('Image/text feature shapes differ: {} / {}'.format(image_feature.shape, text_feature.shape))
         return image_feature, text_feature

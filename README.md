@@ -6,6 +6,19 @@
 This project is the official implementation of the paper _"Hierarchical Chat-Based Strategies with MLLMs for Spatio-Temporal Action Detection"_.
 [[Paper](https://doi.org/10.1016/j.ipm.2025.104094)]
 
+## Maintenance status
+
+See [REPRODUCIBILITY.md](REPRODUCIBILITY.md) for the explicit data, text feature,
+validation, checkpoint and cache contracts introduced by the maintenance update.
+These changes have **not been runtime-tested or benchmarked**. The tables below
+are historical paper results, not measurements of the current revision.
+
+The repository defaults to football-related subsets: one class for J-HMDB
+(`kick_ball`), one for UCF (`SoccerJuggling`), and 15 classes for MultiSports.
+Full-dataset annotations require matching class counts and mappings. The exact
+paper subsets, the relationship between archived descriptions and the stated
+712 clips, and comparable baseline protocols need an author-supplied manifest.
+
 ## Overview
 
 **Problem.** Standard multimodal large language models (MLLMs) often fail to generate sufficiently detailed descriptions for subtle, fast-paced, and multi-participant actions in football videos, limiting the performance of spatio-temporal action detection (STAD).
@@ -18,7 +31,7 @@ This project is the official implementation of the paper _"Hierarchical Chat-Bas
 1. Clone the official MOC-Detector repository.
 2. Replace the original `src/` directory with `Project/src/` from this repository.
 3. Prepare the datasets following the MOC-Detector instructions.
-4. Run the original MOC-Detector training or evaluation pipeline.
+4. Follow the explicit HCBS commands and required artifacts in [REPRODUCIBILITY.md](REPRODUCIBILITY.md).
 
 ## 🏈 Key Features
 - **Hierarchical Chat-Based Strategy (HCBS)**
@@ -50,11 +63,11 @@ git clone https://github.com/MCG-NJU/MOC-Detector.git
 
 2. Overwrite core modules:
 ```bash
-cp -r Project/src/ MOC-Detector/src/
+cp -a Project/src/. MOC-Detector/src/
 ```
 
 ## 🚀 Quick Start
-Please follow the instruction of https://github.com/MCG-NJU/MOC-Detector.
+Install the candidate environment with `pip install -r requirements.txt`, then follow [the HCBS training and inference guide](REPRODUCIBILITY.md). A complete BERT+projection checkpoint is required for multimodal features; the former zero-target training objective is disabled. Original MOC instructions alone do not prepare HCBS text features.
 
 
 ## 📊 Benchmark Results

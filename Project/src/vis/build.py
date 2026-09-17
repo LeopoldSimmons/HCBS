@@ -26,7 +26,7 @@ def build_tubes(opt):
         resname = os.path.join(opt.inference_dir, "{:0>5}.pkl".format(startframe))
         if not os.path.isfile(resname):
             print("ERROR: Missing extracted tubelets " + resname, flush=True)
-            sys.exit()
+            raise FileNotFoundError(resname)
 
         with open(resname, 'rb') as fid:
             VDets[startframe] = pickle.load(fid)
@@ -123,6 +123,5 @@ def build_tubes(opt):
 
         RES[ilabel] = output
         # RES{ilabel:[(out[length,6],score)]}ilabel[0,...]
-    os.system("rm -rf " + opt.inference_dir + "/*.pkl")
     with open(outfile, 'wb') as fid:
         pickle.dump(RES, fid)

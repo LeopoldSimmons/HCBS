@@ -13,6 +13,8 @@ from opts import opts
 from datasets.init_dataset import switch_dataset
 from detector.stream_moc_det import MOCDetector
 import random
+from datasets.io_utils import read_image
+from MOC_utils.cache import prepare_cache, atomic_pickle
 
 GLOBAL_SEED = 317
 
@@ -34,7 +36,7 @@ class PrefetchDataset(torch.utils.data.Dataset):
         self.pre_process = pre_process
         self.pre_process_single_frame = pre_process_single_frame
         self.opt = opt
-        self.vlist = dataset._test_videos[dataset.split - 1]
+        self.vlist = dataset.video_list
         self.gttubes = dataset._gttubes
         self.nframes = dataset._nframes
         self.imagefile = dataset.imagefile
@@ -47,7 +49,7 @@ class PrefetchDataset(torch.utils.data.Dataset):
         self.indices = []
         for v in self.vlist:
             for i in range(1, 1 + self.nframes[v] - self.opt.K + 1):
-                if not os.path.exists(self.outfile(v, i)):
+                if opt.redo or not os.path.exists(self.outfile(v, i)):
                     self.indices += [(v, i)]
         self.img_buffer = []
         self.flow_buffer = []
@@ -75,7 +77,7 @@ class PrefetchDataset(torch.utils.data.Dataset):
 
         if video_tag == 0:
             if self.opt.rgb_model != '':
-                images = [cv2.imread(self.imagefile(v, frame + i)).astype(np.float32) for i in range(self.opt.K)]
+                images = [read_image(self.imagefile(v, frame + i)) for i in range(self.opt.K)]
                 images = self.pre_process(images)
                 if self.opt.flip_test:
                     self.img_buffer = images[:self.opt.K]
@@ -84,7 +86,7 @@ class PrefetchDataset(torch.utils.data.Dataset):
                     self.img_buffer = images
 
             if self.opt.flow_model != '':
-                flows = [cv2.imread(self.flowfile(v, min(frame + i, self.nframes[v]))).astype(np.float32) for i in range(self.opt.K + self.opt.ninput - 1)]
+                flows = [read_image(self.flowfile(v, min(frame + i, self.nframes[v]))) for i in range(self.opt.K + self.opt.ninput - 1)]
                 flows = self.pre_process(flows, is_flow=True, ninput=self.opt.ninput)
 
                 if self.opt.flip_test:
@@ -95,7 +97,7 @@ class PrefetchDataset(torch.utils.data.Dataset):
 
         else:
             if self.opt.rgb_model != '':
-                image = cv2.imread(self.imagefile(v, frame + self.opt.K - 1)).astype(np.float32)
+                image = read_image(self.imagefile(v, frame + self.opt.K - 1))
                 image, image_flip = self.pre_process_single_frame(image)
                 del self.img_buffer[0]
                 self.img_buffer.append(image)
@@ -107,7 +109,7 @@ class PrefetchDataset(torch.utils.data.Dataset):
                     images = self.img_buffer
 
             if self.opt.flow_model != '':
-                flow = cv2.imread(self.flowfile(v, min(frame + self.opt.K + self.opt.ninput - 2, self.nframes[v]))).astype(np.float32)
+                flow = read_image(self.flowfile(v, min(frame + self.opt.K + self.opt.ninput - 2, self.nframes[v])))
                 data_last_flip = self.flow_buffer_flip[-1] if self.opt.flip_test else None
                 data_last = self.flow_buffer[-1]
                 flow, flow_flip = self.pre_process_single_frame(flow, is_flow=True, ninput=self.opt.ninput, data_last=data_last, data_last_flip=data_last_flip)
@@ -122,7 +124,7 @@ class PrefetchDataset(torch.utils.data.Dataset):
 
         outfile = self.outfile(v, frame)
         if not os.path.isdir(os.path.dirname(outfile)):
-            os.system("mkdir -p '" + os.path.dirname(outfile) + "'")
+            os.makedirs(os.path.dirname(outfile), exist_ok=True)
 
         return {'outfile': outfile, 'images': images, 'flows': flows, 'meta': {'height': h, 'width': w, 'output_height': self.output_h, 'output_width': self.output_w}, 'video_tag': video_tag}
 
@@ -134,13 +136,16 @@ class PrefetchDataset(torch.utils.data.Dataset):
 
 
 def stream_inference(opt):
-    os.environ['CUDA_VISIBLE_DEVICES'] = "0"
+    os.environ['CUDA_VISIBLE_DEVICES'] = opt.gpus_str
+    if opt.modality != 'visual_only':
+        raise ValueError('Stream inference supports visual_only; use normal inference for multimodal')
     # torch.backends.cudnn.benchmark = True
 
     Dataset = switch_dataset[opt.dataset]
     opt = opts().update_dataset(opt, Dataset)
 
-    dataset = Dataset(opt, 'test')
+    dataset = Dataset(opt, opt.eval_split)
+    prepare_cache(opt, dataset, 'stream')
     detector = MOCDetector(opt)
     prefetch_dataset = PrefetchDataset(opt, dataset, detector.pre_process, detector.pre_process_single_frame)
     data_loader = torch.utils.data.DataLoader(
@@ -163,8 +168,7 @@ def stream_inference(opt):
         detections = detector.run(data)
 
         for i in range(len(outfile)):
-            with open(outfile[i], 'wb') as file:
-                pickle.dump(detections[i], file)
+            atomic_pickle(outfile[i], detections[i])
 
         Bar.suffix = 'inference: [{0}/{1}]|Tot: {total:} |ETA: {eta:} '.format(
             iter, num_iters, total=bar.elapsed_td, eta=bar.eta_td)
