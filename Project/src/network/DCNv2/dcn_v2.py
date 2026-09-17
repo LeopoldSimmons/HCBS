@@ -5,11 +5,29 @@ from __future__ import division
 
 import torch
 import math
+import os
 from torch import nn
 from torch.nn.modules.utils import _pair
 
-from .dcn_v2_func import DCNv2Function
-from .dcn_v2_func import DCNv2PoolingFunction
+def deform_conv(input, offset, mask, weight, bias, stride, padding, dilation, groups):
+    backend = os.environ.get('HCBS_DCN_BACKEND', 'torchvision')
+    if backend == 'legacy':
+        from .dcn_v2_func import DCNv2Function
+        return DCNv2Function(stride, padding, dilation, groups)(input, offset, mask, weight, bias)
+    if backend != 'torchvision':
+        raise ValueError('Unknown DCN backend: {}'.format(backend))
+    from torchvision.ops import deform_conv2d
+    return deform_conv2d(input, offset, weight, bias, stride=_pair(stride),
+                         padding=_pair(padding), dilation=_pair(dilation), mask=mask)
+
+
+def DCNv2PoolingFunction(*args):
+    # ROI pooling is not used by HCBS. Keep the optional legacy implementation explicit.
+    if os.environ.get('HCBS_DCN_BACKEND', 'torchvision') != 'legacy':
+        raise NotImplementedError('Deformable ROI pooling requires the legacy backend; HCBS detection uses only DCN')
+    from .dcn_v2_func import DCNv2PoolingFunction as LegacyPooling
+    return LegacyPooling(*args)
+
 
 class DCNv2(nn.Module):
 
@@ -37,8 +55,8 @@ class DCNv2(nn.Module):
         self.bias.data.zero_()
 
     def forward(self, input, offset, mask):
-        func = DCNv2Function(self.stride, self.padding, self.dilation, self.deformable_groups)
-        return func(input, offset, mask, self.weight, self.bias)
+        return deform_conv(input, offset, mask, self.weight, self.bias,
+                           self.stride, self.padding, self.dilation, self.deformable_groups)
 
 
 class DCN(DCNv2):
@@ -66,8 +84,8 @@ class DCN(DCNv2):
         o1, o2, mask = torch.chunk(out, 3, dim=1)
         offset = torch.cat((o1, o2), dim=1)
         mask = torch.sigmoid(mask)
-        func = DCNv2Function(self.stride, self.padding, self.dilation, self.deformable_groups)
-        return func(input, offset, mask, self.weight, self.bias)
+        return deform_conv(input, offset, mask, self.weight, self.bias,
+                           self.stride, self.padding, self.dilation, self.deformable_groups)
 
 
 class DCNv2Pooling(nn.Module):

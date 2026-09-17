@@ -12,6 +12,7 @@ from MOC_utils.model import create_inference_model, load_inference_model, conver
 from MOC_utils.data_parallel import DataParallel
 from .decode import moc_decode
 from MOC_utils.utils import flip_tensor
+from MOC_utils.checkpoint import read_checkpoint, check_metadata
 
 
 class MOCDetector(object):
@@ -19,13 +20,14 @@ class MOCDetector(object):
         if opt.gpus[0] >= 0:
             opt.device = torch.device('cuda')
         else:
-            assert 'cpu is not supported!'
+            opt.device = torch.device('cpu')
 
         self.rgb_model_backbone, self.rgb_model_branch = None, None
         self.flow_model_backbone, self.flow_model_branch = None, None
         if opt.rgb_model != '':
             self.rgb_model_backbone, self.rgb_model_branch = create_inference_model(opt.arch, opt.branch_info, opt.head_conv, opt.K, flip_test=opt.flip_test)
             print('create rgb model', flush=True)
+            check_metadata(read_checkpoint(opt.rgb_model), opt, input_kind='rgb')
             self.rgb_model_backbone, self.rgb_model_branch = load_inference_model(self.rgb_model_backbone, self.rgb_model_branch, opt.rgb_model)
             print('load rgb model', flush=True)
             self.rgb_model_backbone = DataParallel(
@@ -41,6 +43,7 @@ class MOCDetector(object):
             self.flow_model_backbone, self.flow_model_branch = create_inference_model(opt.arch, opt.branch_info, opt.head_conv, opt.K, flip_test=opt.flip_test)
             self.flow_model_backbone = convert2flow(opt.ninput, self.flow_model_backbone)
             print('create flow model', flush=True)
+            check_metadata(read_checkpoint(opt.flow_model), opt, input_kind='flow')
             self.flow_model_backbone, self.flow_model_branch = load_inference_model(self.flow_model_backbone, self.flow_model_branch, opt.flow_model)
             print('load flow model', flush=True)
             self.flow_model_backbone = DataParallel(
@@ -93,7 +96,7 @@ class MOCDetector(object):
         return data
 
     def pre_process_single_frame(self, images, is_flow=False, ninput=1, data_last=None, data_last_flip=None):
-        images = cv2.resize(images, (self.opt.resize_height, self.opt.resize_width), interpolation=cv2.INTER_LINEAR)
+        images = cv2.resize(images, (self.opt.resize_width, self.opt.resize_height), interpolation=cv2.INTER_LINEAR)
 
         data = np.empty((3 * ninput, self.opt.resize_height, self.opt.resize_width), dtype=np.float32)
         data_flip = np.empty((3 * ninput, self.opt.resize_height, self.opt.resize_width), dtype=np.float32)

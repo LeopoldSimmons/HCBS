@@ -65,7 +65,26 @@ class _DataParallel(Module):
     def forward(self, *inputs, **kwargs):
         if not self.device_ids:
             return self.module(*inputs, **kwargs)
-        inputs, kwargs = self.scatter(inputs, kwargs, self.device_ids, self.chunk_sizes)
+        def first_tensor(value):
+            if torch.is_tensor(value):
+                return value
+            if isinstance(value, dict):
+                value = value.values()
+            if isinstance(value, (tuple, list)) or type(value).__name__ == 'dict_values':
+                for child in value:
+                    result = first_tensor(child)
+                    if result is not None:
+                        return result
+            return None
+        tensor = first_tensor(inputs)
+        chunks = self.chunk_sizes
+        device_ids = self.device_ids
+        if tensor is not None and tensor.size(self.dim) != sum(chunks):
+            batch = tensor.size(self.dim)
+            count = min(batch, len(device_ids))
+            device_ids = device_ids[:count]
+            chunks = [batch // count + (index < batch % count) for index in range(count)]
+        inputs, kwargs = self.scatter(inputs, kwargs, device_ids, chunks)
         if len(self.device_ids) == 1:
             return self.module(*inputs[0], **kwargs[0])
         replicas = self.replicate(self.module, self.device_ids[:len(inputs)])
@@ -76,7 +95,7 @@ class _DataParallel(Module):
         return replicate(module, device_ids)
 
     def scatter(self, inputs, kwargs, device_ids, chunk_sizes):
-        return scatter_kwargs(inputs, kwargs, device_ids, dim=self.dim, chunk_sizes=self.chunk_sizes)
+        return scatter_kwargs(inputs, kwargs, device_ids, dim=self.dim, chunk_sizes=chunk_sizes)
 
     def parallel_apply(self, replicas, inputs, kwargs):
         return parallel_apply(replicas, inputs, kwargs, self.device_ids[:len(replicas)])

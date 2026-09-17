@@ -1,167 +1,141 @@
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
+"""Training with explicit modalities, validation partitions and full resume."""
+import copy
 import os
 import random
-import shutil
-import time
 
 import numpy as np
 import tensorboardX
 import torch
-import torch.utils.data
-
 from opts import opts
-from MOC_utils.model import create_model, load_model, save_model, load_coco_pretrained_model, load_imagenet_pretrained_model
+from MOC_utils.model import (create_model, convert2flow, load_model, save_model,
+                             load_coco_pretrained_model, load_imagenet_pretrained_model)
+from MOC_utils.checkpoint import read_checkpoint, check_metadata, restore_rng, text_revision
 from trainer.logger import Logger
 from datasets.init_dataset import get_dataset
 from trainer.moc_trainer import MOCTrainer
-from inference.stream_inference import stream_inference
+from inference.normal_inference import normal_inference
 from ACT import frameAP
 
 
 def set_seed(seed):
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
     random.seed(seed)
     np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def worker_init_fn(worker_id):
-    worker_seed = torch.initial_seed() % (2 ** 32)
-    np.random.seed(worker_seed)
-    random.seed(worker_seed)
+    seed = torch.initial_seed() % (2 ** 32)
+    np.random.seed(seed)
+    random.seed(seed)
 
 
 def main(opt):
+    os.environ['CUDA_VISIBLE_DEVICES'] = opt.gpus_str
+    if opt.deterministic:
+        os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
     set_seed(opt.seed)
-
-    torch.backends.cudnn.benchmark = True
-    print('dataset: ' + opt.dataset + '   task:  ' + opt.task)
+    torch.backends.cudnn.benchmark = not opt.deterministic
+    torch.backends.cudnn.deterministic = opt.deterministic
+    torch.use_deterministic_algorithms(opt.deterministic)
+    opt.device = torch.device('cuda' if opt.gpus[0] >= 0 else 'cpu')
     Dataset = get_dataset(opt.dataset)
     opt = opts().update_dataset(opt, Dataset)
-
-    train_writer = tensorboardX.SummaryWriter(log_dir=os.path.join(opt.log_dir, 'train'))
-    epoch_train_writer = tensorboardX.SummaryWriter(log_dir=os.path.join(opt.log_dir, 'train_epoch'))
-    val_writer = tensorboardX.SummaryWriter(log_dir=os.path.join(opt.log_dir, 'val'))
-    epoch_val_writer = tensorboardX.SummaryWriter(log_dir=os.path.join(opt.log_dir, 'val_epoch'))
-
-    logger = Logger(opt, epoch_train_writer, epoch_val_writer)
-
-    os.environ['CUDA_VISIBLE_DEVICES'] = opt.gpus_str
-    opt.device = torch.device('cuda' if opt.gpus[0] >= 0 else 'cpu')
-
+    text_revision(opt)
+    train_dataset = Dataset(opt, 'train')
+    val_dataset = Dataset(opt, 'val') if opt.val_epoch or opt.auto_stop else None
     model = create_model(opt.arch, opt.branch_info, opt.head_conv, opt.K)
-    optimizer = torch.optim.Adam(model.parameters(), opt.lr)
-    start_epoch = opt.start_epoch
-
-    if opt.pretrain_model == 'coco':
+    if opt.load_model:
+        if opt.ninput > 1:
+            model = convert2flow(opt.ninput, model)
+        if not opt.ucf_pretrain:
+            check_metadata(read_checkpoint(opt.load_model, training=opt.resume), opt)
+        model = load_model(model, opt.load_model, ucf_pretrain=opt.ucf_pretrain)
+    elif opt.pretrain_model == 'coco':
         model = load_coco_pretrained_model(opt, model)
     else:
         model = load_imagenet_pretrained_model(opt, model)
-
-    if opt.load_model != '':
-        model, optimizer, _, _ = load_model(model, opt.load_model, optimizer, opt.lr, opt.ucf_pretrain)
-
+    # Structure and input-channel conversions must finish before optimizer creation.
+    optimizer = torch.optim.Adam(model.parameters(), opt.lr)
+    start_epoch, best_ap, best_epoch = opt.start_epoch, float('-inf'), None
+    resume_rng = None
+    if opt.resume:
+        checkpoint = read_checkpoint(opt.load_model, training=True)
+        if 'rng' not in checkpoint or 'training_state' not in checkpoint:
+            raise ValueError('Full resume requires RNG and training_state; load legacy weights without --resume')
+        saved = checkpoint['training_state']
+        if saved.get('lr_step') != opt.lr_step or saved.get('base_lr') != opt.lr:
+            raise ValueError('Resume LR schedule differs from checkpoint')
+        model, optimizer, start_epoch, best_ap = load_model(model, opt.load_model, optimizer)
+        best_epoch = saved.get('best_epoch')
+        resume_rng = checkpoint['rng']
+    elif start_epoch:
+        raise ValueError('Use --resume to restore epoch/LR; --start_epoch alone cannot recover training state')
     trainer = MOCTrainer(opt, model, optimizer)
     trainer.set_device(opt.gpus, opt.chunk_sizes, opt.device)
-
-    train_loader = torch.utils.data.DataLoader(
-        Dataset(opt, 'train'),
-        batch_size=opt.batch_size,
-        shuffle=True,
-        num_workers=opt.num_workers,
-        pin_memory=opt.pin_memory,
-        drop_last=True,
-        worker_init_fn=worker_init_fn,
-    )
-    val_loader = torch.utils.data.DataLoader(
-        Dataset(opt, 'val'),
-        batch_size=opt.batch_size,
-        shuffle=False,
-        num_workers=opt.num_workers,
-        pin_memory=opt.pin_memory,
-        drop_last=False,
-        worker_init_fn=worker_init_fn,
-    )
-
-    print('training...')
-    print('GPU allocate:', opt.chunk_sizes)
-    best_ap = 0
-    best_epoch = 0
-    stop_step = 0
-    for epoch in range(start_epoch + 1, opt.num_epochs + 1):
-        print('epoch is ', epoch)
-        log_dict_train = trainer.train(epoch, train_loader, train_writer)
-        logger.write('epoch: {} |'.format(epoch))
-        for k, v in log_dict_train.items():
-            logger.scalar_summary('epoch/{}'.format(k), v, epoch, 'train')
-            logger.write('train: {} {:8f} | '.format(k, v))
-        logger.write('\n')
-        if opt.save_all and not opt.auto_stop:
-            time_str = time.strftime('%Y-%m-%d-%H-%M')
-            model_name = 'model_[{}]_{}.pth'.format(epoch, time_str)
-            save_model(os.path.join(opt.save_dir, model_name), model, optimizer, epoch, log_dict_train['loss'])
-        else:
-            model_name = 'model_last.pth'
-            save_model(os.path.join(opt.save_dir, model_name), model, optimizer, epoch, log_dict_train['loss'])
-
-        if opt.val_epoch:
-            with torch.no_grad():
-                log_dict_val = trainer.val(epoch, val_loader, val_writer)
-            for k, v in log_dict_val.items():
-                logger.scalar_summary('epoch/{}'.format(k), v, epoch, 'val')
-                logger.write('val: {} {:8f} | '.format(k, v))
-        logger.write('\n')
-
-        if opt.auto_stop:
-            tmp_rgb_model = opt.rgb_model
-            tmp_flow_model = opt.flow_model
-            if opt.rgb_model != '':
-                opt.rgb_model = os.path.join(opt.rgb_model, model_name)
-            if opt.flow_model != '':
-                opt.flow_model = os.path.join(opt.flow_model, model_name)
-            stream_inference(opt)
-            ap = frameAP(opt, print_info=opt.print_log)
-            shutil.rmtree('tmp', ignore_errors=True)
-            if ap > best_ap:
-                best_ap = ap
-                best_epoch = epoch
-                saved1 = os.path.join(opt.save_dir, model_name)
-                saved2 = os.path.join(opt.save_dir, 'model_best.pth')
-                shutil.copy2(saved1, saved2)
-            if stop_step < len(opt.lr_step) and epoch >= opt.lr_step[stop_step]:
-                model, optimizer, _, _ = load_model(
-                    model, os.path.join(opt.save_dir, 'model_best.pth'), optimizer, opt.lr)
-                opt.lr = opt.lr * 0.1
-                logger.write('Drop LR to ' + str(opt.lr) + '\n')
-                print('Drop LR to ' + str(opt.lr))
-                print('load epoch is ', best_epoch)
-                for param_group in optimizer.param_groups:
-                    param_group['lr'] = opt.lr
-                torch.cuda.empty_cache()
-                trainer = MOCTrainer(opt, model, optimizer)
-                trainer.set_device(opt.gpus, opt.chunk_sizes, opt.device)
-                stop_step += 1
-
-            opt.rgb_model = tmp_rgb_model
-            opt.flow_model = tmp_flow_model
-        elif epoch in opt.lr_step:
-            lr = opt.lr * (0.1 ** (opt.lr_step.index(epoch) + 1))
-            logger.write('Drop LR to ' + str(lr) + '\n')
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = lr
-
-    if opt.auto_stop:
-        print('best epoch is ', best_epoch)
-
-    logger.close()
+    loader_args = dict(batch_size=opt.batch_size, num_workers=opt.num_workers,
+                       pin_memory=opt.pin_memory, worker_init_fn=worker_init_fn)
+    train_loader = torch.utils.data.DataLoader(train_dataset, shuffle=True, drop_last=True, **loader_args)
+    if not len(train_loader):
+        raise ValueError('No training batches; reduce --batch_size or check partition and K')
+    val_loader = torch.utils.data.DataLoader(val_dataset, shuffle=False, drop_last=False, **loader_args) if opt.val_epoch else None
+    if val_loader is not None and not len(val_loader):
+        raise ValueError('No validation tubelets; check val partition and K')
+    os.makedirs(opt.save_dir, exist_ok=True)
+    writers = [tensorboardX.SummaryWriter(os.path.join(opt.log_dir, name))
+               for name in ('train', 'train_epoch', 'val', 'val_epoch')]
+    train_writer, epoch_train_writer, val_writer, epoch_val_writer = writers
+    logger = Logger(opt, epoch_train_writer, epoch_val_writer)
+    if resume_rng is not None:
+        restore_rng(resume_rng)
+    try:
+        for epoch in range(start_epoch + 1, opt.num_epochs + 1):
+            train_stats = trainer.train(epoch, train_loader, train_writer)
+            for key, value in train_stats.items():
+                logger.scalar_summary('epoch/' + key, value, epoch, 'train')
+            if opt.val_epoch:
+                with torch.no_grad():
+                    val_stats = trainer.val(epoch, val_loader, val_writer)
+                for key, value in val_stats.items():
+                    logger.scalar_summary('epoch/' + key, value, epoch, 'val')
+            improved = False
+            if opt.auto_stop:
+                evaluation_model = os.path.join(opt.save_dir, 'model_eval.pth')
+                save_model(evaluation_model, model, epoch=epoch, opt=opt)
+                evaluation = copy.copy(opt)
+                evaluation.eval_split = 'val'
+                evaluation.inference_dir = os.path.join(opt.save_dir, 'validation_predictions')
+                if hasattr(evaluation, '_inference_root'):
+                    del evaluation._inference_root
+                evaluation.rgb_model = evaluation_model if opt.ninput == 1 else ''
+                evaluation.flow_model = evaluation_model if opt.ninput > 1 else ''
+                # Identical normal inference path is used for visual and multimodal selection.
+                normal_inference(evaluation)
+                ap = frameAP(evaluation, print_info=opt.print_log)
+                if not np.isfinite(ap):
+                    raise ValueError('Non-finite validation AP at epoch {}'.format(epoch))
+                improved = best_epoch is None or ap > best_ap
+                if improved:
+                    best_ap, best_epoch = float(ap), epoch
+                logger.scalar_summary('epoch/frameAP', ap, epoch, 'val')
+            # A conventional epoch schedule; best weights do not reset optimizer history.
+            next_lr = opt.lr * (0.1 ** sum(epoch >= step for step in opt.lr_step))
+            for group in optimizer.param_groups:
+                group['lr'] = next_lr
+            state = {'best_epoch': best_epoch, 'base_lr': opt.lr, 'lr_step': opt.lr_step}
+            save_args = dict(optimizer=optimizer, epoch=epoch, best=best_ap, opt=opt, training_state=state)
+            save_model(os.path.join(opt.save_dir, 'model_last.pth'), model, **save_args)
+            if improved:
+                save_model(os.path.join(opt.save_dir, 'model_best.pth'), model, **save_args)
+            if opt.save_all:
+                save_model(os.path.join(opt.save_dir, 'model_{:04d}.pth'.format(epoch)), model, **save_args)
+            logger.write('epoch {} train={} best_val_ap={} best_epoch={}\n'.format(epoch, train_stats, best_ap, best_epoch))
+    finally:
+        logger.close()
+        for writer in writers:
+            writer.close()
 
 
 if __name__ == '__main__':
-    shutil.rmtree('tmp', ignore_errors=True)
-    opt = opts().parse()
-    main(opt)
+    main(opts().parse())

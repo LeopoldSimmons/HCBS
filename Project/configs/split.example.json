@@ -1,0 +1,7 @@
+{
+  "dataset": "ucf101",
+  "split": 1,
+  "train": ["SoccerJuggling/REPLACE_WITH_TRAIN_VIDEO_ID"],
+  "val": ["SoccerJuggling/REPLACE_WITH_VALIDATION_VIDEO_ID"],
+  "test": ["SoccerJuggling/REPLACE_WITH_TEST_VIDEO_ID"]
+}

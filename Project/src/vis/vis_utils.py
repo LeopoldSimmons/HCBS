@@ -1,5 +1,8 @@
 import pickle
 import os
+import json
+import shutil
+from pathlib import Path
 import cv2
 from matplotlib import pyplot as plt
 
@@ -15,6 +18,10 @@ def takeLast(elem):
 
 
 def pkl_decode(opt):
+    with open(opt.labels_file, encoding='utf-8') as stream:
+        labels = json.load(stream)
+    if len(labels) != opt.num_classes:
+        raise ValueError('labels_file must match checkpoint num_classes')
     print('build finish, decode detection results', flush=True)
     with open(os.path.join(opt.inference_dir, 'tubes.pkl'), 'rb') as fid:
         pkl = pickle.load(fid)
@@ -28,7 +35,7 @@ def pkl_decode(opt):
             for tube in out:
                 tube_score = tube[1]
                 if tube_score > opt.tube_vis_th:
-                    label_name = label_class[label]
+                    label_name = labels[label]
                     for frame in range(tube[0].shape[0]):
                         frame_score = tube[0][frame][5]
                         if frame_score > opt.frame_vis_th:
@@ -45,8 +52,8 @@ def pkl_decode(opt):
 
 def vis_bbox(inference_dir, bbox_dict, instance_level=False):
     print('draw bboxes on each frame', flush=True)
-    if not os.path.isdir(os.path.dirname('tmp')):
-        os.system("mkdir -p tmp")
+    rendered = Path(inference_dir).parent / 'rendered'
+    rendered.mkdir(exist_ok=True)
     dpi = 80
     im_list = os.listdir(inference_dir)
     im_list.sort()
@@ -61,7 +68,8 @@ def vis_bbox(inference_dir, bbox_dict, instance_level=False):
             ax.imshow(im_data, interpolation='nearest')
             fid = int(pic.split('.')[0])
             if fid not in bbox_dict:
-                plt.savefig('tmp/' + pic)
+                plt.savefig(str(rendered / pic))
+                plt.close(fig)
                 continue
             bbox_list = bbox_dict[fid]
             for bbox in bbox_list:
@@ -82,7 +90,8 @@ def vis_bbox(inference_dir, bbox_dict, instance_level=False):
                         text,
                         bbox=dict(facecolor='navy', alpha=0.7),
                         fontsize=12, color='yellow')
-                plt.savefig('tmp/' + pic)
+            plt.savefig(str(rendered / pic))
+            plt.close(fig)
 
 
 def video2frames(opt):
@@ -92,49 +101,54 @@ def video2frames(opt):
         print('start extracting frames')
         vidcap = cv2.VideoCapture(os.path.join(opt.DATA_ROOT, opt.vname))
         success, image = vidcap.read()
+        if not success:
+            vidcap.release()
+            raise ValueError('Video has no readable frames')
         fid = 1
         while success:
             cv2.imwrite(os.path.join(opt.inference_dir, 'rgb', '{:0>5}.jpg'.format(fid)), image)
             fid = fid + 1
             success, image = vidcap.read()
+        vidcap.release()
 
 
 def pre_extracted_frames(opt):
     print('moving frames(JPG, Flow)')
-    os.system("cp " + os.path.join(opt.IMAGE_ROOT, 'rgb-images', opt.vname, '*') + " " + os.path.join(opt.inference_dir, 'rgb'))
-    os.system("cp " + os.path.join(opt.IMAGE_ROOT, 'brox-images', opt.vname, '*') + " " + os.path.join(opt.inference_dir, 'flow'))
+    for source, target in [('rgb-images', 'rgb'), ('brox-images', 'flow')]:
+        if target == 'flow' and not opt.flow_model:
+            continue
+        for path in (Path(opt.IMAGE_ROOT) / source / opt.vname).iterdir():
+            if path.is_file():
+                shutil.copy2(path, Path(opt.inference_dir) / target / path.name)
 
 
 def rgb2avi(inference_dir):
     print('convert .JPG to .AVI', flush=True)
     fps = 25
-    height, width, _ = cv2.imread('tmp/00001.jpg').shape
+    height, width, _ = cv2.imread(str(Path(inference_dir) / 'rendered' / '00001.jpg')).shape
     size = (width, height)
 
     fourcc = cv2.VideoWriter_fourcc(*'MPEG')
     video = cv2.VideoWriter(inference_dir + '/result_video.avi', fourcc, fps, size)
 
-    filelist = os.listdir('tmp')
+    filelist = os.listdir(Path(inference_dir) / 'rendered')
     filelist.sort()
     for pic in filelist:
         if pic.endswith('.jpg') or pic.endswith('.png'):
-            video.write(cv2.imread(os.path.join('tmp', pic)))
+            video.write(cv2.imread(os.path.join(inference_dir, 'rendered', pic)))
 
     video.release()
     cv2.destroyAllWindows()
-    os.system("rm -rf tmp")
-    os.system("rm -rf " + inference_dir + "/rgb")
-    os.system("rm -rf " + inference_dir + "/flow")
 
 
 def rgb2gif(inference_dir):
     print('convert .JPG to .GIF', flush=True)
     import imageio
     GIF = []
-    filelist = os.listdir('tmp')
+    filelist = os.listdir(Path(inference_dir) / 'rendered')
     filelist.sort()
     for pic in filelist:
         if pic.endswith('.jpg') or pic.endswith('.png'):
-            pic = cv2.imread(os.path.join('tmp', pic))[:, :, ::-1]
+            pic = cv2.imread(os.path.join(inference_dir, 'rendered', pic))[:, :, ::-1]
             GIF.append(pic)
     imageio.mimsave(inference_dir + '/result_video.gif', GIF, duration=0.04)  # the lower duration, the quicker gif speed

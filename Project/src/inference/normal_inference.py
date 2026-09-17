@@ -17,14 +17,8 @@ import random
 # cv2.setNumThreads(0)
 GLOBAL_SEED = 317
 
-def get_file_tensor(path):
-    numpy_list = np.load(path,  allow_pickle=True)
-    # 创建一个形状为（3, 1, 1）的数组，其中元素都为1
-    ones_array = np.ones((3, 1, 1))
-    # 使用广播将两个数组相乘
-    numpy_list = numpy_list * ones_array
-    numpy_list = numpy_list.astype(np.float32)
-    return numpy_list
+from datasets.io_utils import read_image, load_text
+from MOC_utils.cache import prepare_cache, atomic_pickle
 
 def set_seed(seed):
     torch.manual_seed(seed)
@@ -42,9 +36,10 @@ class PrefetchDataset(torch.utils.data.Dataset):
     def __init__(self, opt, dataset, pre_process_func):
         self.pre_process_func = pre_process_func
         self.opt = opt
-        self.vlist = dataset._test_videos[dataset.split - 1]
+        self.vlist = dataset.video_list
         self.gttubes = dataset._gttubes
         self.nframes = dataset._nframes
+        self.textfile = dataset.textfile
         self.imagefile = dataset.imagefile
         self.flowfile = dataset.flowfile
         self.resolution = dataset._resolution
@@ -55,7 +50,7 @@ class PrefetchDataset(torch.utils.data.Dataset):
         self.indices = []
         for v in self.vlist:
             for i in range(1, 1 + self.nframes[v] - self.opt.K + 1):
-                if not os.path.exists(self.outfile(v, i)):
+                if opt.redo or not os.path.exists(self.outfile(v, i)):
                     self.indices += [(v, i)]
 
     def __getitem__(self, index):
@@ -67,25 +62,23 @@ class PrefetchDataset(torch.utils.data.Dataset):
         txt_tensor = []
 
         if self.opt.rgb_model != '':
-            images = [cv2.imread(self.imagefile(v, frame + i)).astype(np.float32) for i in range(self.opt.K)]
+            images = [read_image(self.imagefile(v, frame + i)) for i in range(self.opt.K)]
             images = self.pre_process_func(images)
 
-            files = [self.imagefile(v, frame + i) for i in range(self.opt.K)]
-            for file in files:
-                pkl_file.append(file.replace('rgb-images', 'numpys').replace('.jpg', '.npy'))
-            for file in pkl_file:
-                txt_tensor.append(get_file_tensor(file))
-
-            txt_tensor = txt_tensor + txt_tensor
-
+            if self.opt.modality == 'multimodal':
+                txt_tensor = [load_text(self.textfile(v, frame + i), self.opt.text_format,
+                                        self.input_h, self.input_w) for i in range(self.opt.K)]
+                if self.opt.flip_test:
+                    # Text maps are semantic representations, not spatial image pixels.
+                    txt_tensor = txt_tensor + [tensor.copy() for tensor in txt_tensor]
 
         if self.opt.flow_model != '':
-            flows = [cv2.imread(self.flowfile(v, min(frame + i, self.nframes[v]))).astype(np.float32) for i in range(self.opt.K + self.opt.ninput - 1)]
+            flows = [read_image(self.flowfile(v, min(frame + i, self.nframes[v]))) for i in range(self.opt.K + self.opt.ninput - 1)]
             flows = self.pre_process_func(flows, is_flow=True, ninput=self.opt.ninput)
 
         outfile = self.outfile(v, frame)
         if not os.path.isdir(os.path.dirname(outfile)):
-            os.system("mkdir -p '" + os.path.dirname(outfile) + "'")
+            os.makedirs(os.path.dirname(outfile), exist_ok=True)
 
         return {'outfile': outfile, 'textdata': txt_tensor, 'images': images, 'flows': flows, 'meta': {'height': h, 'width': w, 'output_height': self.output_h, 'output_width': self.output_w}}
         # return {'outfile': outfile, 'images': images, 'flows': flows, 'meta': {'height': h, 'width': w, 'output_height': self.output_h, 'output_width': self.output_w}}
@@ -99,12 +92,13 @@ class PrefetchDataset(torch.utils.data.Dataset):
 
 def normal_inference(opt, drop_last=False):
     os.environ['CUDA_VISIBLE_DEVICES'] = opt.gpus_str
-    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.benchmark = not opt.deterministic
 
     Dataset = switch_dataset[opt.dataset]
     opt = opts().update_dataset(opt, Dataset)
 
-    dataset = Dataset(opt, 'test')
+    dataset = Dataset(opt, opt.eval_split)
+    prepare_cache(opt, dataset, 'normal')
     detector = MOCDetector(opt)
     prefetch_dataset = PrefetchDataset(opt, dataset, detector.pre_process)
     total_num = len(prefetch_dataset)
@@ -128,8 +122,7 @@ def normal_inference(opt, drop_last=False):
         detections = detector.run(data)
 
         for i in range(len(outfile)):
-            with open(outfile[i], 'wb') as file:
-                pickle.dump(detections[i], file)
+            atomic_pickle(outfile[i], detections[i])
 
 
         Bar.suffix = 'inference: [{0}/{1}]|Tot: {total:} |ETA: {eta:} '.format(

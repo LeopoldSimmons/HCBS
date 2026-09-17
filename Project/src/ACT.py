@@ -4,6 +4,9 @@ from __future__ import print_function
 import sys
 import os
 import pickle
+import json
+from pathlib import Path
+from MOC_utils.cache import require_cache_protocol, atomic_pickle
 
 import numpy as np
 
@@ -15,19 +18,31 @@ from ACT_utils.ACT_utils import iou2d, pr_to_ap, nms3dt, iou3dt
 from ACT_utils.ACT_build import load_frame_detections, BuildTubes
 
 
+def write_metrics(opt, metric, mean_ap, per_class):
+    from MOC_utils.cache import atomic_json
+    manifest = Path(opt.inference_dir) / 'inference.json'
+    payload = {'metric': metric, 'iou_threshold': opt.th, 'mAP_percent': float(mean_ap),
+               'per_class_AP_percent': per_class, 'dataset': opt.dataset,
+               'split': opt.split, 'eval_split': opt.eval_split,
+               'modality': opt.modality,
+               'inference': json.loads(manifest.read_text()) if manifest.exists() else None}
+    atomic_json(Path(opt.inference_dir) / '{}_{:g}.json'.format(metric, opt.th), payload)
+
+
 def frameAP(opt, print_info=True):
     redo = opt.redo
     th = opt.th
-    split = 'val'
+    split = opt.eval_split
     model_name = opt.model_name
     Dataset = get_dataset(opt.dataset)
     dataset = Dataset(opt, split)
+    require_cache_protocol(opt, dataset)
 
     inference_dirname = opt.inference_dir
     print('inference_dirname is ', inference_dirname)
     print('threshold is ', th)
 
-    vlist = dataset._test_videos[opt.split - 1]
+    vlist = dataset.video_list
     # load per-frame detections
     frame_detections_file = os.path.join(inference_dirname, 'frame_detections.pkl')
     if os.path.isfile(frame_detections_file) and not redo:
@@ -37,11 +52,7 @@ def frameAP(opt, print_info=True):
             alldets = pickle.load(fid)
     else:
         alldets = load_frame_detections(opt, dataset, opt.K, vlist, inference_dirname)
-        try:
-            with open(frame_detections_file, 'wb') as fid:
-                pickle.dump(alldets, fid, protocol=4)
-        except:
-            print("OverflowError: cannot serialize a bytes object larger than 4 GiB")
+        atomic_pickle(frame_detections_file, alldets)
 
     results = {}
     # compute AP for each class
@@ -98,7 +109,7 @@ def frameAP(opt, print_info=True):
                 fp += 1
 
             pr[i + 1, 0] = float(tp) / float(tp + fp)
-            pr[i + 1, 1] = float(tp) / float(tp + fn)
+            pr[i + 1, 1] = (float(tp) / float(tp + fn)) if tp + fn else 0.0
 
         results[label] = pr
 
@@ -107,6 +118,7 @@ def frameAP(opt, print_info=True):
     print(ap)
     frameap_result = np.mean(ap)
     if print_info:
+        os.makedirs(os.path.join(opt.root_dir, 'result'), exist_ok=True)
         log_file = open(os.path.join(opt.root_dir, 'result', opt.exp_id), 'a+')
         log_file.write('\nTask_{} frameAP_{}\n'.format(model_name, th))
         print('Task_{} frameAP_{}\n'.format(model_name, th))
@@ -114,14 +126,16 @@ def frameAP(opt, print_info=True):
         log_file.close()
         print("{:20s} {:8.2f}".format("mAP", frameap_result))
 
+    write_metrics(opt, 'frameAP', frameap_result, dict(zip(dataset.labels, ap.tolist())))
     return frameap_result
 
 
 def frameAP_error(opt, redo=False):
     th = opt.th
-    split = 'val'
+    split = opt.eval_split
     Dataset = get_dataset(opt.dataset)
     dataset = Dataset(opt, split)
+    require_cache_protocol(opt, dataset)
     inference_dirname = opt.inference_dir
     print('inference_dirname is ', inference_dirname)
     print('threshold is ', th)
@@ -133,7 +147,7 @@ def frameAP_error(opt, redo=False):
         with open(eval_file, 'rb') as fid:
             res = pickle.load(fid)
     else:
-        vlist = dataset._test_videos[opt.split - 1]
+        vlist = dataset.video_list
         # load per- frame detections
         frame_detections_file = os.path.join(inference_dirname, 'frame_detections.pkl')
         if os.path.isfile(frame_detections_file) and not redo:
@@ -142,8 +156,7 @@ def frameAP_error(opt, redo=False):
                 alldets = pickle.load(fid)
         else:
             alldets = load_frame_detections(opt, dataset, opt.K, vlist, inference_dirname)
-            with open(frame_detections_file, 'wb') as fid:
-                pickle.dump(alldets, fid)
+            atomic_pickle(frame_detections_file, alldets)
         res = {}
         # alldets: list of numpy array with <video_index> <frame_index> <ilabel> <score> <x1> <y1> <x2> <y2>
         # compute AP for each class
@@ -233,7 +246,7 @@ def frameAP_error(opt, redo=False):
                     fp += 1
 
                 pr[i + 1, 0] = float(tp) / float(tp + fp)  # precision
-                pr[i + 1, 1] = float(tp) / float(tp + fn)  # recall
+                pr[i + 1, 1] = (float(tp) / float(tp + fn)) if tp + fn else 0.0  # recall
                 pr[i + 1, 2] = float(EL) / float(tp + fp)
                 pr[i + 1, 3] = float(EC) / float(tp + fp)
                 pr[i + 1, 4] = float(ET) / float(tp + fp)
@@ -275,13 +288,14 @@ def videoAP(opt, print_info=True):
 
     th = opt.th
     model_name = opt.model_name
-    split = 'val'
+    split = opt.eval_split
     Dataset = get_dataset(opt.dataset)
     dataset = Dataset(opt, split)
+    require_cache_protocol(opt, dataset)
 
     inference_dirname = opt.inference_dir
 
-    vlist = dataset._test_videos[opt.split - 1]
+    vlist = dataset.video_list
     # load detections
     # alldets = for each label in 1..nlabels, list of tuple (v,score,tube as Kx5 array)
     alldets = {ilabel: [] for ilabel in range(len(dataset.labels))}
@@ -289,7 +303,7 @@ def videoAP(opt, print_info=True):
         tubename = os.path.join(inference_dirname, v + '_tubes.pkl')
         if not os.path.isfile(tubename):
             print("ERROR: Missing extracted tubes " + tubename)
-            sys.exit()
+            raise FileNotFoundError('Missing predictions; complete inference before evaluation')
 
         with open(tubename, 'rb') as fid:
             tubes = pickle.load(fid)
@@ -310,7 +324,7 @@ def videoAP(opt, print_info=True):
             if ilabel not in tubes:
                 continue
 
-            gt[v] = tubes[ilabel]
+            gt[v] = deepcopy(tubes[ilabel])
 
             if len(gt[v]) == 0:
                 del gt[v]
@@ -344,7 +358,7 @@ def videoAP(opt, print_info=True):
                 fp += 1
 
             pr[i + 1, 0] = float(tp) / float(tp + fp)
-            pr[i + 1, 1] = float(tp) / float(tp + fn)
+            pr[i + 1, 1] = (float(tp) / float(tp + fn)) if tp + fn else 0.0
 
         res[dataset.labels[ilabel]] = pr
 
@@ -354,6 +368,7 @@ def videoAP(opt, print_info=True):
     videoap_result = np.mean(ap)
 
     if print_info:
+        os.makedirs(os.path.join(opt.root_dir, 'result'), exist_ok=True)
         log_file = open(os.path.join(opt.root_dir, 'result', opt.exp_id), 'a+')
         log_file.write('\nTask_{} VideoAP_{}\n'.format(model_name, th))
         print('Task_{} VideoAP_{}\n'.format(opt.model_name, th))
@@ -363,6 +378,7 @@ def videoAP(opt, print_info=True):
         log_file.write("\n{:20s} {:8.2f}\n\n".format("mAP", videoap_result))
         log_file.close()
         print("{:20s} {:8.2f}".format("mAP", videoap_result))
+    write_metrics(opt, 'videoAP', videoap_result, dict(zip(dataset.labels, ap.tolist())))
     return videoap_result
 
 
@@ -383,7 +399,7 @@ def videpAP_050_095(opt):
 if __name__ == "__main__":
     opt = opts().parse()
     if not os.path.exists(os.path.join(opt.root_dir, 'result')):
-        os.system("mkdir -p '" + os.path.join(opt.root_dir, 'result') + "'")
+        os.makedirs(os.path.join(opt.root_dir, 'result'), exist_ok=True)
     if opt.task == 'BuildTubes':
         BuildTubes(opt)
     elif opt.task == 'frameAP':

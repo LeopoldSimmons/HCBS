@@ -2,13 +2,17 @@ import os
 import re
 import string
 import time
+import argparse
+import hashlib
+import json
+from pathlib import Path
 
 import numpy as np
 import torch
 from tqdm import tqdm
-from transformers import BertModel, BertTokenizer, get_linear_schedule_with_warmup
+from transformers import BertModel, BertTokenizer
 from torch import nn
-import torch.optim as optim
+
 
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -29,7 +33,8 @@ class CustomModel(nn.Module):
     def forward(self, input_ids, attention_mask):
         outputs = self.bert(input_ids, attention_mask=attention_mask)
         last_hidden_state = outputs[0]
-        pooled_output = last_hidden_state.mean(dim=1)
+        mask = attention_mask.unsqueeze(-1).to(last_hidden_state.dtype)
+        pooled_output = (last_hidden_state * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1)
         x = self.fc1(pooled_output)
         x = self.layer_norm(x)
         x = self.activation(x)
@@ -51,42 +56,11 @@ def convert_dataset_to_tensors(dataset, tokenizer):
     return input_tensors
 
 
-def train_model(model, train_data, num_epochs=1, lr=1e-3):
-    model.to(device)
-    optimizer = optim.AdamW(model.parameters(), lr=lr)
-    criterion = nn.MSELoss()
-
-    total_steps = len(train_data) * num_epochs
-    scheduler = get_linear_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=0,
-        num_training_steps=total_steps,
-    )
-
-    for epoch in range(num_epochs):
-        print(f'Epoch {epoch + 1}/{num_epochs}')
-        total_loss = 0
-        model.train()
-
-        for step, (input_ids, attention_mask) in enumerate(train_data, 1):
-            input_ids = input_ids.to(device)
-            attention_mask = attention_mask.to(device)
-            optimizer.zero_grad()
-
-            outputs = model(input_ids, attention_mask)
-            loss = criterion(outputs, torch.zeros_like(outputs))
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
-
-            total_loss += loss.item()
-            if step % 1000 == 0 or step == len(train_data):
-                print(f'Step: {step}/{len(train_data)}, Loss: {loss.item():.4f}')
-
-        average_loss = total_loss / len(train_data)
-        print(f'Epoch {epoch + 1}/{num_epochs}, Loss: {average_loss:.4f}')
-
-    return model
+def train_model(*args, **kwargs):
+    raise RuntimeError(
+        'The former zero-target objective collapses semantic features and has been disabled. '
+        'Export a verified trained BERT+projection checkpoint. A replacement training objective '
+        'requires an explicitly documented research protocol and new benchmark results.')
 
 
 def save_model(model, tokenizer, path):
@@ -105,7 +79,7 @@ def load_model(path, output_size):
     model = CustomModel(BertModel.from_pretrained(path), output_size)
     projection_path = os.path.join(path, PROJECTION_STATE_NAME)
     if os.path.exists(projection_path):
-        state = torch.load(projection_path, map_location='cpu')
+        state = torch.load(projection_path, map_location='cpu', weights_only=True)
         model.fc1.load_state_dict(state['fc1'])
         model.fc2.load_state_dict(state['fc2'])
         model.layer_norm.load_state_dict(state['layer_norm'])
@@ -163,42 +137,62 @@ def get_txt_files_in_folder(folder_path):
     return txt_files
 
 
-def save_tensor(tensor, source_path):
+def digest(path):
+    value = hashlib.sha256()
+    with open(path, 'rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            value.update(chunk)
+    return value.hexdigest()
+
+
+def save_tensor(tensor, target):
     array = tensor.detach().cpu().numpy()
-    file_path = source_path.replace('sentence', 'numpy').replace('.txt', '')
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
-    np.save(file_path, array)
+    if array.shape != (1, 64, 72, 72) or not np.isfinite(array).all():
+        raise ValueError('Expected a finite [1,64,72,72] projection output')
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix('.npy.partial')
+    with temporary.open('wb') as stream:
+        np.save(stream, array[0].astype(np.float32), allow_pickle=False)
+    os.replace(temporary, target)
 
 
-def use_model(sentence_path, model_path, model_name='bert-base-uncased'):
-    print(sentence_path)
-    print(f'loading {model_name} model and tokenizer...')
-    tokenizer = BertTokenizer.from_pretrained(model_name)
-    bert_model = BertModel.from_pretrained(model_name)
-
-    dataset = get_sentences(sentence_path)
-    input_tensors = convert_dataset_to_tensors(dataset, tokenizer)
-
-    output_size = 64 * 72 * 72
-    model = CustomModel(bert_model, output_size)
-    model = train_model(model, input_tensors)
-
-    save_model(model, tokenizer, model_path)
-    loaded_model = load_model(model_path, output_size)
-
-    time_start = time.time()
-    file_path_list = get_txt_files_in_folder(sentence_path)
-    print('start predicting...')
-    for file_path in tqdm(file_path_list):
-        text = get_sentence(file_path)
-        result = test_model(loaded_model, text, tokenizer)
-        save_tensor(result, file_path)
-    print(f'Time cost: {time.time() - time_start} s')
+def use_model(sentence_path, model_path, output_root):
+    source = Path(sentence_path).resolve()
+    output = Path(output_root).resolve()
+    if not source.is_dir():
+        raise FileNotFoundError(source)
+    if output.exists() and any(output.iterdir()):
+        raise ValueError('Choose an empty output directory; existing features must remain immutable')
+    files = sorted(source.rglob('*.txt'))
+    if not files:
+        raise ValueError('No descriptions found in {}'.format(source))
+    tokenizer = BertTokenizer.from_pretrained(model_path, local_files_only=True)
+    model = load_model(model_path, 64 * 72 * 72).to(device).eval()
+    model_root = Path(model_path).resolve()
+    model_revision = {str(path.relative_to(model_root)): digest(path)
+                      for path in sorted(model_root.rglob('*')) if path.is_file()}
+    records = []
+    output.mkdir(parents=True, exist_ok=True)
+    for file in tqdm(files):
+        target = output / file.relative_to(source).with_suffix('.npy')
+        result = test_model(model, get_sentence(str(file)), tokenizer)
+        save_tensor(result, target)
+        records.append({'path': str(target.relative_to(output)), 'sha256': digest(target),
+                        'source_sha256': digest(file)})
+    manifest = {'schema': 1, 'format': 'feature_map', 'shape': [64, 72, 72],
+                'model_files': model_revision, 'files': records,
+                'note': 'Export only. No text model training or benchmark verification performed.'}
+    temporary = output / 'features.json.partial'
+    temporary.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+    os.replace(temporary, output / 'features.json')
 
 
 if __name__ == '__main__':
-    sentence_path = os.environ.get('HCBS_SENTENCE_PATH')
-    model_path = os.environ.get('HCBS_TEXT_MODEL_PATH', './trained_model/trained_model_pooling')
-    if not sentence_path:
-        raise RuntimeError('Set HCBS_SENTENCE_PATH to the directory containing text descriptions.')
-    use_model(sentence_path, model_path)
+    parser = argparse.ArgumentParser(description='Export an existing BERT+projection checkpoint; never train on test descriptions')
+    parser.add_argument('--sentence_root', default=os.environ.get('HCBS_SENTENCE_PATH'))
+    parser.add_argument('--model_path', default=os.environ.get('HCBS_TEXT_MODEL_PATH'))
+    parser.add_argument('--output_root', required=True)
+    args = parser.parse_args()
+    if not args.sentence_root or not args.model_path:
+        parser.error('--sentence_root and --model_path (or their HCBS environment variables) are required')
+    use_model(args.sentence_root, args.model_path, args.output_root)

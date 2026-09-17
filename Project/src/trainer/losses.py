@@ -20,7 +20,7 @@ class ModleWithLoss(torch.nn.Module):
         self.loss = loss
 
     def forward(self, batch):
-        output = self.model(batch['input'], batch['textdata'])[0]
+        output = self.model(batch['input'], batch.get('textdata'))[0]
         # output = self.model(batch['input'])[0]
         loss, loss_stats = self.loss(output, batch)
         return output, loss, loss_stats
@@ -74,6 +74,6 @@ class RegL1Loss(torch.nn.Module):
         mask = mask.unsqueeze(2).expand_as(pred).float()
         # print(pred.shape)
         # loss = F.l1_loss(pred * mask, target * mask, reduction='elementwise_mean')
-        loss = F.l1_loss(pred * mask, target * mask, size_average=False)
+        loss = F.l1_loss(pred * mask, target * mask, reduction='sum')
         loss = loss / (mask.sum() + 1e-4)
         return loss

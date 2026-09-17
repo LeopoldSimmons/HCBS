@@ -20,6 +20,8 @@ def _nms(heat, kernel=3):
 def _topN(scores, N=40):
     batch, cat, height, width = scores.size()
 
+    if N < 1 or N > height * width:
+        raise ValueError('N must be within [1, height * width]')
     # each class, top N in h*w    [b, c, N]
     topk_scores, topk_index = torch.topk(scores.view(batch, cat, -1), N)
 
@@ -50,7 +52,7 @@ def moc_decode(heat, wh, mov, N=100, K=5):
 
     mov_copy = mov.clone()
     mov_copy = mov_copy.view(batch, N, K, 2)
-    index_all = torch.zeros((batch, N, K, 2)).cuda()
+    index_all = torch.zeros((batch, N, K, 2), device=heat.device, dtype=torch.long)
     xs_all = xs.clone().unsqueeze(2).expand(batch, N, K)
     ys_all = ys.clone().unsqueeze(2).expand(batch, N, K)
     xs_all = xs_all + mov_copy[:, :, :, 0]
@@ -61,6 +63,8 @@ def moc_decode(heat, wh, mov, N=100, K=5):
     xs_all = xs_all.long()
     ys_all = ys_all.long()
 
+    xs_all.clamp_(0, width - 1)
+    ys_all.clamp_(0, height - 1)
     index_all[:, :, :, 0] = xs_all + ys_all * width
     index_all[:, :, :, 1] = xs_all + ys_all * width
     index_all[index_all < 0] = 0

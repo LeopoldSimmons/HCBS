@@ -4,6 +4,8 @@ from __future__ import print_function
 
 import os
 import pickle
+from pathlib import Path
+from datasets.protocol import configure_protocol
 
 import torch.utils.data as data
 
@@ -17,6 +19,7 @@ class BaseDataset(data.Dataset):
         super(BaseDataset, self).__init__()
         pkl_file = os.path.join(ROOT_DATASET_PATH, pkl_filename)
 
+        self.annotation_file = pkl_file
         with open(pkl_file, 'rb') as fid:
             pkl = pickle.load(fid, encoding='iso-8859-1')
         for k in pkl:
@@ -32,14 +35,11 @@ class BaseDataset(data.Dataset):
         self._resize_height = opt.resize_height
         self._resize_width = opt.resize_width
 
-        assert len(self._train_videos[self.split - 1]) + len(self._test_videos[self.split - 1]) == len(self._nframes)
+        self.num_classes = self.num_classes if opt.num_classes is None else opt.num_classes
+        opt.num_classes = self.num_classes
+        configure_protocol(self, opt)
         self._indices = []
-        if self.mode == 'train':
-            # get train video list
-            video_list = self._train_videos[self.split - 1]
-        else:
-            # get test video list
-            video_list = self._test_videos[self.split - 1]
+        video_list = self.video_list
         if self._ninput < 1:
             raise NotImplementedError('Not implemented: ninput < 1')
 
@@ -105,10 +105,14 @@ class BaseDataset(data.Dataset):
             'max_trials': 50,
             'max_sample': 1,
         }, ]
-        self.max_objs = 128
+        self.max_objs = opt.max_objs
 
     def __len__(self):
         return len(self._indices)
+
+    def textfile(self, v, i):
+        root = Path(self.opt.text_root) if self.opt.text_root else Path(self.ROOT_DATASET_PATH) / 'numpys'
+        return str(root / v / ('{:05d}.npy'.format(i)))
 
     def imagefile(self, v, i):
         raise NotImplementedError

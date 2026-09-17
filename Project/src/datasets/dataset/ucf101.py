@@ -11,7 +11,7 @@ class UCF101(BaseDataset):
 
     def __init__(self, opt, mode):
         assert opt.split == 1, "We use only the first split of UCF101"
-        self.ROOT_DATASET_PATH = os.path.join(opt.root_dir, 'data/UCF101_v2')
+        self.ROOT_DATASET_PATH = os.path.join(opt.data_root, 'UCF101_v2')
         pkl_filename = 'UCF101v2-GT.pkl'
         super(UCF101, self).__init__(opt, mode, self.ROOT_DATASET_PATH, pkl_filename)
 
